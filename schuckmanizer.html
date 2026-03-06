@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leasing Flyer Schuckmanizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+  @media print {
+    .np { display: none !important; }
+    body { margin: 0; padding: 0; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .pg { box-shadow: none !important; margin: 0 !important; }
+  }
+  @page { margin: 0; size: letter; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script>
+// Storage shim - maps window.storage API to localStorage
+window.storage = {
+  get: async function(key) { var v = localStorage.getItem(key); return v ? { value: v } : null; },
+  set: async function(key, value) { localStorage.setItem(key, value); return { key: key, value: value }; },
+  delete: async function(key) { localStorage.removeItem(key); return { key: key, deleted: true }; }
+};
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useCallback, useEffect } = React;
+
+const C = { navy: "#1B2A4A", red: "#CC2229", white: "#fff", light: "#f0f2f5", gray: "#8a919c", dark: "#0d1117", border: "#d0d5dd" };
+
+const DATA_PROMPT = `You are a commercial real estate flyer data extractor. Analyze this flyer and extract ALL property information into structured JSON. Return ONLY valid JSON — no markdown, no preamble, no backticks.
+{
+  "propertyName": "string",
+  "address": "string",
+  "city": "string",
+  "state": "string",
+  "zip": "string",
+  "propertyType": "string",
+  "sizeAvailable": "string",
+  "totalGLA": "string",
+  "frontage": "string or null",
+  "parking": "string or null",
+  "availableSpaces": [{"suite":"string","size":"string","pricePerSF":"string","notes":"string"}],
+  "highlights": ["string"],
+  "coTenants": ["string"],
+  "demographics": {"population1mi":"string or null","population3mi":"string or null","population5mi":"string or null","avgHHI1mi":"string or null","avgHHI3mi":"string or null","avgHHI5mi":"string or null","trafficCount":"string or null"},
+  "additionalNotes": "string"
+}
+Extract every data point.`;
+
+const SK_LOGO = "sk_l6", SK_CO = "sk_c6", SK_BR = "sk_b6";
+const FONTS = [
+  { label: "Helvetica", value: "'Helvetica Neue',Helvetica,Arial,sans-serif" },
+  { label: "Georgia", value: "Georgia,'Times New Roman',serif" },
+  { label: "Garamond", value: "'EB Garamond',Garamond,serif" },
+  { label: "Futura", value: "Futura,'Century Gothic',sans-serif" },
+  { label: "Trebuchet", value: "'Trebuchet MS',sans-serif" },
+  { label: "Verdana", value: "Verdana,Geneva,sans-serif" },
+  { label: "Palatino", value: "'Palatino Linotype',Palatino,serif" },
+  { label: "Franklin Gothic", value: "'Franklin Gothic Medium','Arial Narrow',sans-serif" },
+];
+
+function CropImage({ src, height, zoom, panX, panY, fit, onZoom, onPan, onHeight, onFit, selected, onSelect, editing }) {
+  const dragging = useRef(false), last = useRef({ x: 0, y: 0 });
+  const onMD = e => {
+    if (!editing) return; e.preventDefault(); dragging.current = true; last.current = { x: e.clientX, y: e.clientY };
+    const onMM = e2 => { if (!dragging.current) return; onPan(panX + e2.clientX - last.current.x, panY + e2.clientY - last.current.y); last.current = { x: e2.clientX, y: e2.clientY }; };
+    const onMU = () => { dragging.current = false; window.removeEventListener("mousemove", onMM); window.removeEventListener("mouseup", onMU); };
+    window.addEventListener("mousemove", onMM); window.addEventListener("mouseup", onMU);
+  };
+  return (
+    <div onClick={e => { e.stopPropagation(); onSelect(); }} style={{ width: "100%", height, overflow: "hidden", position: "relative", cursor: editing && selected ? "grab" : "pointer", background: "#fff" }} onMouseDown={onMD}>
+      <img src={src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: fit, transform: fit === "cover" ? `scale(${zoom}) translate(${panX / zoom}px, ${panY / zoom}px)` : "none", transformOrigin: "center", pointerEvents: "none", display: "block" }} />
+      {editing && selected && (
+        <div className="np" style={{ position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)", background: "rgba(0,0,0,0.88)", borderRadius: 8, padding: "7px 12px", display: "flex", alignItems: "center", gap: 8, zIndex: 20 }} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
+          <button onClick={() => onFit(fit === "contain" ? "cover" : "contain")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>{fit === "contain" ? "Fill" : "Fit"}</button>
+          <span style={{ color: "#fff9", fontSize: 10 }}>Zoom</span>
+          <input type="range" min={0.3} max={3} step={0.05} value={zoom} onChange={e => onZoom(+e.target.value)} style={{ width: 70, accentColor: C.red }} />
+          <span style={{ color: C.red, fontSize: 10, fontWeight: 700 }}>{Math.round(zoom * 100)}%</span>
+          <span style={{ color: "#fff9", fontSize: 10 }}>H</span>
+          <input type="range" min={100} max={600} step={10} value={height} onChange={e => onHeight(+e.target.value)} style={{ width: 70, accentColor: C.red }} />
+          <span style={{ color: C.red, fontSize: 10, fontWeight: 700 }}>{height}</span>
+          <button onClick={() => { onZoom(1); onPan(0, 0); }} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 4, padding: "2px 6px", fontSize: 9, cursor: "pointer" }}>Reset</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TB({ children, pos = "above" }) {
+  const st = pos === "below" ? { top: "100%", marginTop: 4 } : { bottom: "100%", marginBottom: 4 };
+  return <div className="np" onClick={e => e.stopPropagation()} style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", background: C.navy, borderRadius: 8, padding: "7px 12px", display: "flex", alignItems: "center", gap: 8, zIndex: 30, boxShadow: "0 4px 16px rgba(0,0,0,0.3)", whiteSpace: "nowrap", ...st }}>{children}</div>;
+}
+const Tb = ({ onClick: oc, children: ch }) => <button onClick={oc} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: "#fff", borderRadius: 4, width: 20, height: 20, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>{ch}</button>;
+const Tl = ({ children: ch }) => <span style={{ color: "#fff9", fontSize: 9, fontWeight: 600, letterSpacing: 1 }}>{ch}</span>;
+const Ts = () => <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.2)" }} />;
+const Tv = ({ children: ch }) => <span style={{ color: "#fff", fontSize: 11, fontWeight: 700, minWidth: 18, textAlign: "center" }}>{ch}</span>;
+const Th = ({ onClick: oc }) => <button onClick={oc} style={{ background: "rgba(255,255,255,0.1)", border: "none", color: "#ff6b6b", borderRadius: 4, padding: "2px 6px", cursor: "pointer", fontSize: 9, fontWeight: 600 }}>Hide</button>;
+const Tf = ({ value: v, onChange: oc }) => <select value={v} onChange={e => oc(+e.target.value)} style={{ background: "rgba(255,255,255,0.12)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 4, padding: "1px 4px", fontSize: 9, cursor: "pointer", maxWidth: 90 }}>{FONTS.map((f, i) => <option key={i} value={i} style={{ color: "#000" }}>{f.label}</option>)}</select>;
+
+function Ed({ id, selected: sel, onSelect, children, editing, toolbar }) {
+  const is = sel === id;
+  return (
+    <div onClick={e => { e.stopPropagation(); if (editing) onSelect(id); }}
+      style={{ position: "relative", outline: editing && is ? `2px solid ${C.red}` : editing ? "2px solid transparent" : "none", outlineOffset: -1, cursor: editing ? "pointer" : "default", transition: "outline 0.15s" }}
+      onMouseEnter={e => { if (editing && !is) e.currentTarget.style.outline = `2px dashed ${C.red}44` }}
+      onMouseLeave={e => { if (editing && !is) e.currentTarget.style.outline = "2px solid transparent" }}>
+      {editing && is && toolbar}{children}
+    </div>
+  );
+}
+
+function App() {
+  const [step, setStep] = useState("upload");
+  const [origImg, setOrigImg] = useState(null);
+  const [editData, setEditData] = useState(null);
+  const [error, setError] = useState(null);
+  const [processing, setProcessing] = useState(false);
+  const [procMsg, setProcMsg] = useState("");
+  const [procPct, setProcPct] = useState(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const [logoB64, setLogoB64] = useState("");
+  const [cPhone, setCPhone] = useState("516-496-8888");
+  const [cWeb, setCWeb] = useState("www.schuckmanrealty.com");
+  const [cAddr, setCAddr] = useState("120 NORTH VILLAGE AVENUE | ROCKVILLE CENTRE, NY");
+  const [brokers, setBrokers] = useState([
+    { name: "RYAN ADHAMI", title: "Associate LIC. RE Broker", email: "ra@schuckmanrealty.com" },
+    { name: "AVI SCHUCKMAN", title: "LIC. RE Salesperson", email: "avi@schuckmanrealty.com" },
+    { name: "KENNETH SCHUCKMAN", title: "LIC. RE Broker", email: "ken@schuckmanrealty.com" },
+  ]);
+  const [heroImg, setHeroImg] = useState(null);
+  const [siteImg, setSiteImg] = useState(null);
+  const [tenantLogos, setTenantLogos] = useState({}); // {i: {url, bg, fit, zoom}}
+  const setTenantLogo = (i, dataUrl) => setTenantLogos(p => ({ ...p, [i]: { url: dataUrl, bg: "#f0f2f5", fit: "contain", zoom: 1 } }));
+  const rmTenantLogo = i => setTenantLogos(p => { const n = { ...p }; delete n[i]; return n; });
+  const setTenantBg = (i, bg) => setTenantLogos(p => ({ ...p, [i]: { ...p[i], bg } }));
+  const setTenantFit = (i, fit) => setTenantLogos(p => ({ ...p, [i]: { ...p[i], fit } }));
+  const setTenantZoom = (i, zoom) => setTenantLogos(p => ({ ...p, [i]: { ...p[i], zoom } }));
+  const [listingUrl, setListingUrl] = useState("");
+  const [allListingsUrl, setAllListingsUrl] = useState("https://www.schuckmanrealty.com");
+  const [s, setS] = useState({
+    heroH: 340, siteH: 380, logoH: 90,
+    titleSize: 28, bodySize: 15, hlSize: 14, tenantSize: 13,
+    titleFont: 0, bodyFont: 0, hlFont: 0, tenantFont: 0, tableFont: 0, tableSize: 14,
+    hlCols: 2, heroZoom: 1, heroPX: 0, heroPY: 0, heroFit: "contain",
+    siteZoom: 1, sitePX: 0, sitePY: 0, siteFit: "contain", tenantLogoH: 32,
+    showTable: true, showHL: true, showTenants: true, showDemo: true, showSite: true, showListing: true, showFooter: true, pageCount: 3,
+  });
+  const [sel, setSel] = useState(null);
+  const [editing, setEditing] = useState(true);
+  const [brokerHeading, setBrokerHeading] = useState("CONTACT EXCLUSIVE BROKERS FOR DETAILS:");
+  const [apiKey, setApiKey] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [aiProvider, setAiProvider] = useState("anthropic");
+  const fileRef = useRef(null), logoRef = useRef(null), heroRef = useRef(null), siteRef = useRef(null);
+  const flyerRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try { const r = await window.storage.get(SK_LOGO); if (r?.value) setLogoB64(r.value) } catch { }
+      try { const r = await window.storage.get(SK_CO); if (r?.value) { const d = JSON.parse(r.value); setCPhone(d.p || ""); setCWeb(d.w || ""); setCAddr(d.a || ""); if (d.au) setAllListingsUrl(d.au); } } catch { }
+      try { const r = await window.storage.get(SK_BR); if (r?.value) { const d = JSON.parse(r.value); if (d.length) setBrokers(d); } } catch { }
+      try { const ak = localStorage.getItem('sk_apikey'); if (ak) setApiKey(ak); } catch { }
+      try { const ok = localStorage.getItem('sk_openaikey'); if (ok) setOpenaiKey(ok); } catch { }
+      try { const ap = localStorage.getItem('sk_aiprovider'); if (ap) setAiProvider(ap); } catch { }
+      try { const ok = localStorage.getItem('sk_openaikey'); if (ok) setOpenaiKey(ok); } catch { }
+      try { const ap = localStorage.getItem('sk_aiprovider'); if (ap) setAiProvider(ap); } catch { }
+    })();
+  }, []);
+
+  const saveLogo = async v => { setLogoB64(v); try { await window.storage.set(SK_LOGO, v) } catch { } };
+  const saveCo = async () => { try { await window.storage.set(SK_CO, JSON.stringify({ p: cPhone, w: cWeb, a: cAddr, au: allListingsUrl })) } catch { } };
+  const saveBr = async () => { try { await window.storage.set(SK_BR, JSON.stringify(brokers)) } catch { } };
+  const readFile = f => new Promise(r => { const x = new FileReader(); x.onload = e => r(e.target.result); x.readAsDataURL(f) });
+  const us = (k, v) => setS(p => ({ ...p, [k]: v }));
+
+  const handleFile = useCallback(async file => {
+    setError(null); setProcessing(true); setStep("processing"); setProcMsg("Reading file..."); setProcPct(10);
+    try {
+      const url = await readFile(file); setOrigImg(url); setProcMsg("Uploading to AI..."); setProcPct(25);
+      const b64 = url.split(",")[1], isPdf = file.type === "application/pdf";
+      const block = isPdf ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } } : { type: "image", source: { type: "base64", media_type: file.type || "image/png", data: b64 } };
+      setProcMsg("AI is reading the flyer..."); setProcPct(40);
+      let txt = "";
+      if (aiProvider === "openai" && openaiKey) {
+        const oaiContent = isPdf
+          ? [{ type: "text", text: DATA_PROMPT }, { type: "file", file: { filename: "flyer.pdf", file_data: "data:application/pdf;base64," + b64 } }]
+          : [{ type: "text", text: DATA_PROMPT }, { type: "image_url", image_url: { url: url, detail: "high" } }];
+        const r = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + openaiKey }, body: JSON.stringify({ model: "gpt-4o", max_tokens: 4000, messages: [{ role: "user", content: oaiContent }] }) });
+        setProcMsg("Processing response..."); setProcPct(75);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error.message || "OpenAI API error");
+        txt = d.choices?.[0]?.message?.content || "";
+      } else {
+        const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" }, body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 4000, messages: [{ role: "user", content: [block, { type: "text", text: DATA_PROMPT }] }] }) });
+        setProcMsg("Processing response..."); setProcPct(75);
+        const d = await r.json();
+        if (d.error) throw new Error(d.error.message || "Anthropic API error");
+        txt = d.content?.map(c => c.text || "").join("") || "";
+      }
+      setProcMsg("Finalizing..."); setProcPct(90);
+      setEditData(JSON.parse(txt.replace(/```json|```/g, "").trim()));
+      setProcPct(100); setStep("editing");
+    } catch (e) { console.error(e); setError(e.message || "Failed to extract data."); setStep("upload") }
+    finally { setProcessing(false); setProcMsg(""); setProcPct(0); }
+  }, [apiKey, openaiKey, aiProvider]);
+
+  const updateField = (path, value) => {
+    setEditData(prev => { const c = JSON.parse(JSON.stringify(prev)), k = path.split("."); let o = c; for (let i = 0; i < k.length - 1; i++) o = o[isNaN(k[i]) ? k[i] : +k[i]]; o[isNaN(k[k.length - 1]) ? k[k.length - 1] : +k[k.length - 1]] = value; return c; });
+  };
+  const addSpace = () => setEditData(p => ({ ...p, availableSpaces: [...(p.availableSpaces || []), { suite: "", size: "", pricePerSF: "", notes: "" }] }));
+  const rmSpace = i => setEditData(p => ({ ...p, availableSpaces: p.availableSpaces.filter((_, j) => j !== i) }));
+  const addHL = () => setEditData(p => ({ ...p, highlights: [...(p.highlights || []), ""] }));
+  const rmHL = i => setEditData(p => ({ ...p, highlights: p.highlights.filter((_, j) => j !== i) }));
+  const addCT = () => setEditData(p => ({ ...p, coTenants: [...(p.coTenants || []), ""] }));
+  const rmCT = i => {
+    setEditData(p => ({ ...p, coTenants: p.coTenants.filter((_, j) => j !== i) }));
+    setTenantLogos(prev => {
+      const next = {};
+      Object.keys(prev).forEach(k => {
+        const ki = +k;
+        if (ki < i) next[ki] = prev[ki];
+        else if (ki > i) next[ki - 1] = prev[ki];
+      });
+      return next;
+    });
+  };
+  const addBk = () => setBrokers(p => [...p, { name: "", title: "", email: "" }]);
+  const rmBk = i => setBrokers(p => p.filter((_, j) => j !== i));
+  const updBk = (i, k, v) => setBrokers(p => p.map((b, j) => j === i ? { ...b, [k]: v } : b));
+
+  const bf = "'Helvetica Neue',Helvetica,Arial,sans-serif";
+  const iS = { width: "100%", padding: "9px 12px", borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 14, fontFamily: bf, outline: "none", boxSizing: "border-box" };
+  const lS = { fontSize: 11, fontWeight: 600, color: C.gray, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4, display: "block" };
+  const sBtn = (t, fn, d) => <button onClick={fn} style={{ padding: "5px 12px", fontSize: 12, borderRadius: 5, border: "none", cursor: "pointer", fontWeight: 600, background: d ? "#fee2e2" : "#e8edf5", color: d ? "#dc2626" : C.navy }}>{t}</button>;
+  const secT = t => <h3 style={{ fontSize: 16, color: C.navy, margin: "26px 0 12px", paddingBottom: 6, borderBottom: `2px solid ${C.red}`, fontWeight: 700 }}>{t}</h3>;
+  const eSpan = (val, onB, extra) => editing ? <span contentEditable suppressContentEditableWarning onBlur={e => onB(e.currentTarget.textContent)} style={{ outline: "none", borderBottom: `1px dashed ${C.red}33`, ...extra }}>{val}</span> : <span style={extra}>{val}</span>;
+
+  // Settings
+  const Settings = () => (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: bf }} onClick={() => setShowSettings(false)}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 600, maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ padding: "18px 28px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between" }}>
+          <h2 style={{ fontSize: 20, color: C.navy, margin: 0, fontWeight: 700 }}>Settings</h2>
+          <button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", fontSize: 24, cursor: "pointer", color: C.gray }}>×</button>
+        </div>
+        <div style={{ padding: "20px 28px 28px" }}>
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 8 }}>COMPANY LOGO</div>
+            {logoB64 && <div style={{ marginBottom: 12, padding: 16, border: `1px solid ${C.border}`, borderRadius: 8, textAlign: "center" }}><img src={logoB64} alt="" style={{ maxHeight: 80, objectFit: "contain" }} /></div>}
+            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+              <button onClick={() => logoRef.current?.click()} style={{ padding: "8px 16px", borderRadius: 6, border: `1px solid ${C.border}`, background: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.navy }}>Upload</button>
+              {logoB64 && <button onClick={() => { setLogoB64(""); try { window.storage.delete(SK_LOGO) } catch { } }} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "#fee2e2", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#dc2626" }}>Remove</button>}
+              <input ref={logoRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && readFile(e.target.files[0]).then(saveLogo)} />
+            </div>
+            <label style={lS}>Or paste Base64</label>
+            <textarea placeholder="data:image/png;base64,..." style={{ ...iS, height: 48, fontSize: 11, fontFamily: "monospace" }}
+              onPaste={e => { const t = e.clipboardData.getData("text").trim(); if (t) { e.preventDefault(); saveLogo(t.startsWith("data:") ? t : `data:image/png;base64,${t}`) } }}
+              value={logoB64 ? "✓ Saved — paste to replace" : ""} readOnly={!!logoB64} />
+          </div>
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 8 }}>AI PROVIDER</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              {[["anthropic", "Anthropic (Claude)"], ["openai", "OpenAI (GPT-4o)"]].map(([val, label]) => (
+                <button key={val} onClick={() => { setAiProvider(val); localStorage.setItem('sk_aiprovider', val); }}
+                  style={{ flex: 1, padding: "10px 16px", borderRadius: 6, border: aiProvider === val ? "2px solid " + C.red : "1px solid " + C.border, background: aiProvider === val ? C.red + "11" : "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700, color: aiProvider === val ? C.red : C.gray }}>{label}</button>
+              ))}
+            </div>
+            {aiProvider === "anthropic" && <div>
+              <p style={{ fontSize: 12, color: C.gray, marginBottom: 8, lineHeight: 1.5 }}>Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer" style={{ color: C.red }}>console.anthropic.com</a></p>
+              <input type="password" style={iS} value={apiKey} onChange={e => { setApiKey(e.target.value); localStorage.setItem('sk_apikey', e.target.value); }} placeholder="sk-ant-..." />
+            </div>}
+            {aiProvider === "openai" && <div>
+              <p style={{ fontSize: 12, color: C.gray, marginBottom: 8, lineHeight: 1.5 }}>Get a key at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" style={{ color: C.red }}>platform.openai.com</a></p>
+              <input type="password" style={iS} value={openaiKey} onChange={e => { setOpenaiKey(e.target.value); localStorage.setItem('sk_openaikey', e.target.value); }} placeholder="sk-..." />
+            </div>}
+          </div>
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 8 }}>COMPANY INFO</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div><label style={lS}>Phone</label><input style={iS} value={cPhone} onChange={e => setCPhone(e.target.value)} /></div>
+              <div><label style={lS}>Website</label><input style={iS} value={cWeb} onChange={e => setCWeb(e.target.value)} /></div>
+            </div>
+            <div style={{ marginTop: 10 }}><label style={lS}>Footer Address</label><input style={iS} value={cAddr} onChange={e => setCAddr(e.target.value)} /></div>
+          </div>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 8 }}>BROKERS</div>
+            {brokers.map((b, i) => (
+              <div key={i} style={{ padding: 10, border: `1px solid ${C.border}`, borderRadius: 8, marginBottom: 8, background: C.light }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 12, fontWeight: 700, color: C.navy }}>Broker {i + 1}</span>{brokers.length > 1 && sBtn("×", () => rmBk(i), true)}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                  <div><label style={lS}>Name</label><input style={iS} value={b.name} onChange={e => updBk(i, "name", e.target.value)} /></div>
+                  <div><label style={lS}>Title</label><input style={iS} value={b.title} onChange={e => updBk(i, "title", e.target.value)} /></div>
+                  <div><label style={lS}>Email</label><input style={iS} value={b.email} onChange={e => updBk(i, "email", e.target.value)} /></div>
+                </div>
+              </div>
+            ))}
+            <button onClick={addBk} style={{ padding: "6px 14px", fontSize: 12, borderRadius: 5, border: `1px dashed ${C.border}`, cursor: "pointer", background: "#fff", color: C.navy, fontWeight: 600 }}>+ Add Broker</button>
+          </div>
+          <button onClick={() => { saveCo(); saveBr(); setShowSettings(false) }} style={{ padding: "12px 0", borderRadius: 8, border: "none", background: C.navy, color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 700, width: "100%" }}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // UPLOAD
+  if (step === "upload") return (
+    <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${C.navy},#0f1a2e)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: bf, padding: 24 }}>
+      {showSettings && <Settings />}
+      <button onClick={() => setShowSettings(true)} style={{ position: "fixed", top: 16, right: 16, background: "rgba(255,255,255,0.1)", border: "none", borderRadius: "50%", width: 44, height: 44, cursor: "pointer", fontSize: 20, color: C.red, zIndex: 50 }}>⚙</button>
+      <div style={{ textAlign: "center", marginBottom: 20 }}>
+        {logoB64 ? <img src={logoB64} alt="" style={{ maxHeight: 120, display: "block", margin: "0 auto 8px" }} /> : <div style={{ fontSize: 34, fontWeight: 900, color: C.red, letterSpacing: 3, marginBottom: 8 }}>SCHUCKMAN</div>}
+        <h1 style={{ fontSize: 36, color: "#fff", fontWeight: 700, margin: 0 }}>Leasing Flyer Schuckmanizer</h1>
+        <p style={{ color: C.gray, fontSize: 15, marginTop: 10, maxWidth: 460, lineHeight: 1.6 }}>Upload a competitor's flyer. We'll extract the data, you fine-tune directly on the live flyer.</p>
+      </div>
+      <div onDrop={e => { e.preventDefault(); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]) }} onDragOver={e => e.preventDefault()} onClick={() => fileRef.current?.click()}
+        style={{ width: "100%", maxWidth: 500, border: `2px dashed ${C.red}44`, borderRadius: 14, padding: "56px 36px", textAlign: "center", cursor: "pointer", background: "rgba(255,255,255,0.03)" }}>
+        <div style={{ fontSize: 44, marginBottom: 14 }}>📄</div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 600 }}>Drop a flyer here or click to browse</div>
+        <div style={{ color: C.gray, fontSize: 13, marginTop: 6 }}>PNG, JPG, or PDF</div>
+        <input ref={fileRef} type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={e => e.target.files[0] && handleFile(e.target.files[0])} />
+      </div>
+      {error && <div style={{ marginTop: 20, color: "#ef4444", background: "rgba(239,68,68,0.1)", padding: "10px 18px", borderRadius: 8, fontSize: 13 }}>{error}</div>}
+      
+      <button onClick={() => { setEditData({ propertyName: "", address: "", city: "", state: "", zip: "", propertyType: "", sizeAvailable: "", totalGLA: "", frontage: "", parking: "", availableSpaces: [], highlights: [], coTenants: [], demographics: { population1mi: "", population3mi: "", population5mi: "", avgHHI1mi: "", avgHHI3mi: "", avgHHI5mi: "", trafficCount: "" }, additionalNotes: "" }); setStep("editing"); }} style={{ marginTop: 16, padding: "10px 24px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)", background: "transparent", color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Or enter details manually →</button>
+      {!logoB64 && <div style={{ marginTop: 16, padding: "10px 20px", borderRadius: 8, background: "rgba(204,34,41,0.12)", color: C.red, fontSize: 13 }}>⚙ Click gear to add your logo first</div>}
+      {!(apiKey || openaiKey) && <div style={{ marginTop: 8, padding: "10px 20px", borderRadius: 8, background: "rgba(255,255,255,0.06)", color: "#ffffff88", fontSize: 13 }}>⚙ Add your API key in Settings for AI extraction</div>}
+    </div>
+  );
+
+  // PROCESSING with progress bar
+  if (step === "processing") return (
+    <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${C.navy},#0f1a2e)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: bf }}>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{ width: 56, height: 56, border: `3px solid ${C.red}33`, borderTopColor: C.red, borderRadius: "50%", animation: "spin 1s linear infinite", marginBottom: 28 }} />
+      <div style={{ color: "#fff", fontSize: 20, fontWeight: 600, marginBottom: 10 }}>Analyzing Flyer...</div>
+      <div style={{ color: C.red, fontSize: 14, marginBottom: 20 }}>{procMsg}</div>
+      <div style={{ width: 300, height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${procPct}%`, height: "100%", background: C.red, borderRadius: 3, transition: "width 0.5s ease" }} />
+      </div>
+      <div style={{ color: "#ffffff44", fontSize: 12, marginTop: 8 }}>{procPct}%</div>
+    </div>
+  );
+
+  // EDITING FORM
+  if (step === "editing" && editData) {
+    const imgBox = (label, val, setVal, ref, icon) => (
+      <div style={{ flex: 1 }}>
+        <label style={{ ...lS, marginBottom: 8 }}>{label}</label>
+        {val ? (<div style={{ position: "relative", borderRadius: 8, overflow: "hidden", border: `2px solid ${C.navy}` }}>
+          <img src={val} alt="" style={{ width: "100%", height: 140, objectFit: "cover" }} />
+          <button onClick={() => setVal(null)} style={{ position: "absolute", top: 4, right: 4, background: "#dc2626", color: "#fff", border: "none", borderRadius: "50%", width: 22, height: 22, fontSize: 13, cursor: "pointer" }}>×</button>
+        </div>) : (<div onClick={() => ref.current?.click()} style={{ height: 140, border: `2px dashed ${C.border}`, borderRadius: 8, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", background: "#fff" }}>
+          <div style={{ fontSize: 30, marginBottom: 4 }}>{icon}</div><div style={{ fontSize: 12, color: C.gray, fontWeight: 600 }}>Click to upload</div>
+        </div>)}
+        <input ref={ref} type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && readFile(e.target.files[0]).then(setVal)} />
+      </div>
+    );
+    return (
+      <div style={{ minHeight: "100vh", background: C.light, fontFamily: bf }}>
+        {showSettings && <Settings />}
+        <div style={{ background: C.navy, padding: "12px 28px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 100 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            {logoB64 ? <img src={logoB64} alt="" style={{ height: 28 }} /> : <span style={{ color: C.red, fontWeight: 800, fontSize: 15 }}>SCHUCKMAN</span>}
+            <span style={{ color: "#fff", fontSize: 15 }}>Edit Data</span>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setShowSettings(true)} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: C.red, cursor: "pointer", fontSize: 14 }}>⚙</button>
+            <button onClick={() => { setStep("upload"); setOrigImg(null); setEditData(null); setHeroImg(null); setSiteImg(null) }} style={{ padding: "8px 18px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "transparent", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Start Over</button>
+            <button onClick={() => { setStep("preview"); setEditing(true); setSel(null); }} style={{ padding: "8px 24px", borderRadius: 6, border: "none", background: C.red, color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Preview & Fine-Tune →</button>
+          </div>
+        </div>
+        <div style={{ maxWidth: 820, margin: "0 auto", padding: "24px 20px 80px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: origImg ? "220px 1fr" : "1fr", gap: 28 }}>
+            {origImg && <div style={{ position: "sticky", top: 72, alignSelf: "start" }}><div style={lS}>Original</div><img src={origImg} alt="" style={{ width: "100%", borderRadius: 6 }} /></div>}
+            <div>
+              {secT("Property Images")}<p style={{ fontSize: 13, color: C.gray, margin: "-4px 0 12px" }}>Crop and zoom on the next screen.</p>
+              <div style={{ display: "flex", gap: 14 }}>{imgBox("Hero Photo", heroImg, setHeroImg, heroRef, "📸")}{imgBox("Site Plan", siteImg, setSiteImg, siteRef, "📐")}</div>
+              {secT("Links")}<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}><div><label style={lS}>Listing URL</label><input style={iS} value={listingUrl} onChange={e => setListingUrl(e.target.value)} placeholder="https://..." /></div><div><label style={lS}>All Listings URL</label><input style={iS} value={allListingsUrl} onChange={e => setAllListingsUrl(e.target.value)} /></div></div>
+              {secT("Property Information")}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div style={{ gridColumn: "1/-1" }}><label style={lS}>Property Name</label><input style={iS} value={editData.propertyName || ""} onChange={e => updateField("propertyName", e.target.value)} /></div>
+                <div style={{ gridColumn: "1/-1" }}><label style={lS}>Address</label><input style={iS} value={editData.address || ""} onChange={e => updateField("address", e.target.value)} /></div>
+                <div><label style={lS}>City</label><input style={iS} value={editData.city || ""} onChange={e => updateField("city", e.target.value)} /></div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}><div><label style={lS}>State</label><input style={iS} value={editData.state || ""} onChange={e => updateField("state", e.target.value)} /></div><div><label style={lS}>Zip</label><input style={iS} value={editData.zip || ""} onChange={e => updateField("zip", e.target.value)} /></div></div>
+                <div><label style={lS}>Size Available</label><input style={iS} value={editData.sizeAvailable || ""} onChange={e => updateField("sizeAvailable", e.target.value)} /></div>
+                <div><label style={lS}>Total GLA</label><input style={iS} value={editData.totalGLA || ""} onChange={e => updateField("totalGLA", e.target.value)} /></div>
+                <div><label style={lS}>Frontage</label><input style={iS} value={editData.frontage || ""} onChange={e => updateField("frontage", e.target.value)} /></div>
+                <div><label style={lS}>Parking</label><input style={iS} value={editData.parking || ""} onChange={e => updateField("parking", e.target.value)} /></div>
+              </div>
+              {secT("Available Spaces")}{(editData.availableSpaces || []).map((sp, i) => (<div key={i} style={{ background: "#fff", borderRadius: 8, padding: 10, marginBottom: 8, border: `1px solid ${C.border}` }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 12, fontWeight: 700, color: C.navy }}>Space {i + 1}</span>{sBtn("×", () => rmSpace(i), true)}</div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}><div><label style={lS}>Suite</label><input style={iS} value={sp.suite || ""} onChange={e => updateField(`availableSpaces.${i}.suite`, e.target.value)} /></div><div><label style={lS}>Size</label><input style={iS} value={sp.size || ""} onChange={e => updateField(`availableSpaces.${i}.size`, e.target.value)} /></div><div><label style={lS}>Price/SF</label><input style={iS} value={sp.pricePerSF || ""} onChange={e => updateField(`availableSpaces.${i}.pricePerSF`, e.target.value)} /></div></div><div style={{ marginTop: 6 }}><label style={lS}>Notes</label><input style={iS} value={sp.notes || ""} onChange={e => updateField(`availableSpaces.${i}.notes`, e.target.value)} /></div></div>))}{sBtn("+ Add Space", addSpace)}
+              {secT("Highlights")}{(editData.highlights || []).map((h, i) => <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}><input style={iS} value={h} onChange={e => updateField(`highlights.${i}`, e.target.value)} />{sBtn("×", () => rmHL(i), true)}</div>)}{sBtn("+ Add", addHL)}
+              {secT("Tenants")}{(editData.coTenants || []).map((t, i) => <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                <input style={{ ...iS, flex: 1 }} value={t} onChange={e => updateField(`coTenants.${i}`, e.target.value)} placeholder="Tenant name" />
+                {tenantLogos[i]?.url ? (
+                  <div style={{ position: "relative", flexShrink: 0 }}>
+                    <img src={tenantLogos[i].url} alt="" style={{ height: 36, width: 72, objectFit: "contain", borderRadius: 4, border: `1px solid ${C.border}`, background: tenantLogos[i].bg || C.light }} />
+                    <button onClick={() => rmTenantLogo(i)} style={{ position: "absolute", top: -4, right: -4, background: "#dc2626", color: "#fff", border: "none", borderRadius: "50%", width: 16, height: 16, fontSize: 10, cursor: "pointer", lineHeight: 1 }}>×</button>
+                  </div>
+                ) : (
+                  <label style={{ padding: "6px 10px", fontSize: 11, borderRadius: 5, border: `1px dashed ${C.border}`, cursor: "pointer", fontWeight: 600, color: C.gray, whiteSpace: "nowrap", flexShrink: 0 }}>
+                    📷 Logo
+                    <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { if (e.target.files[0]) readFile(e.target.files[0]).then(url => setTenantLogo(i, url)); }} />
+                  </label>
+                )}
+                {sBtn("×", () => rmCT(i), true)}
+              </div>)}{sBtn("+ Add", addCT)}
+              {secT("Demographics")}<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>{[["1 Mile", "1mi"], ["3 Mile", "3mi"], ["5 Mile", "5mi"]].map(([l, k]) => (<div key={k}><div style={{ fontSize: 13, fontWeight: 700, color: C.navy, marginBottom: 6 }}>{l}</div><label style={lS}>Pop</label><input style={{ ...iS, marginBottom: 4 }} value={editData.demographics?.[`population${k}`] || ""} onChange={e => updateField(`demographics.population${k}`, e.target.value)} /><label style={lS}>HHI</label><input style={iS} value={editData.demographics?.[`avgHHI${k}`] || ""} onChange={e => updateField(`demographics.avgHHI${k}`, e.target.value)} /></div>))}</div><div style={{ marginTop: 8 }}><label style={lS}>Traffic Count</label><input style={iS} value={editData.demographics?.trafficCount || ""} onChange={e => updateField("demographics.trafficCount", e.target.value)} /></div>
+              {secT("Brokers")}{brokers.map((b, i) => (<div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, marginBottom: 6, alignItems: "end" }}><div><label style={lS}>Name</label><input style={iS} value={b.name} onChange={e => updBk(i, "name", e.target.value)} /></div><div><label style={lS}>Title</label><input style={iS} value={b.title} onChange={e => updBk(i, "title", e.target.value)} /></div><div><label style={lS}>Email</label><input style={iS} value={b.email} onChange={e => updBk(i, "email", e.target.value)} /></div>{brokers.length > 1 && <div>{sBtn("×", () => rmBk(i), true)}</div>}</div>))}{sBtn("+ Add", addBk)}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // LIVE PREVIEW
+  if (step === "preview" && editData) {
+    const d = editData, dm = d.demographics || {};
+    const fullAddr = [d.address, d.city ? `${d.city}, ${d.state || ""} ${d.zip || ""}` : ""].filter(Boolean).join(" | ");
+    const propRows = [d.address && ["SITE:", `${d.address} | ${d.city || ""}, ${d.state || ""} ${d.zip || ""}`], d.sizeAvailable && ["SIZE AVAILABLE:", d.sizeAvailable], d.frontage && ["FRONTAGE:", d.frontage], d.parking && ["PARKING:", d.parking], d.totalGLA && ["GLA:", d.totalGLA]].filter(Boolean);
+    const hl = d.highlights || [], hlMid = Math.ceil(hl.length / 2);
+    const hasP2 = (s.showSite && siteImg) || (s.showHL && hl.length) || (s.showTenants && d.coTenants?.length) || (s.showDemo && (dm.population1mi || dm.trafficCount));
+    const SB = ({ sk, label }) => editing ? <div className="np" style={{ padding: "4px 48px" }}><button onClick={() => us(sk, true)} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>+ Show {label}</button></div> : null;
+
+    const pageFooter = s.showFooter ? (
+      <div style={{ position: "relative" }}>
+        <div style={{ borderTop: `2px solid ${C.navy}`, margin: "0 48px" }} />
+        <div style={{ padding: "10px 48px 12px", textAlign: "center" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.dark, letterSpacing: 2.5 }}>SCHUCKMAN REALTY INC. | {cAddr}</div>
+        </div>
+        {editing && <div className="np" style={{ position: "absolute", top: 6, right: 52 }}><button onClick={() => us("showFooter", false)} style={{ padding: "2px 8px", fontSize: 9, borderRadius: 4, border: "none", cursor: "pointer", fontWeight: 700, background: "rgba(204,34,41,0.1)", color: C.red }}>Hide Footer</button></div>}
+      </div>
+    ) : editing ? <div className="np" style={{ padding: "4px 48px", textAlign: "right" }}><button onClick={() => us("showFooter", true)} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>+ Show Footer</button></div> : null;
+
+    const contactBlock = (<>
+      <Ed id="logo2" selected={sel} onSelect={setSel} editing={editing}
+        toolbar={<TB pos="below"><Tl>HEIGHT</Tl><Tb onClick={() => us("logoH", Math.max(40, s.logoH - 5))}>−</Tb><Tv>{s.logoH}</Tv><Tb onClick={() => us("logoH", Math.min(140, s.logoH + 5))}>+</Tb></TB>}>
+        <div style={{ display: "flex", justifyContent: "center", padding: s.pageCount === 3 ? "44px 20px 16px" : "28px 20px 12px" }}>
+          {logoB64 ? <img src={logoB64} alt="" style={{ height: s.logoH, objectFit: "contain" }} />
+            : <div style={{ textAlign: "center" }}><div style={{ fontSize: 42, fontWeight: 900, color: C.red, letterSpacing: 4 }}>SCHUCKMAN</div><div style={{ fontSize: 13, letterSpacing: 8, color: C.dark, fontWeight: 500 }}>R E A L T Y &nbsp; I N C .</div></div>}
+        </div>
+      </Ed>
+      <div style={{ background: C.navy, padding: s.pageCount === 3 ? "14px 48px" : "10px 48px", textAlign: "center", margin: "0 48px" }}><span style={{ fontSize: s.pageCount === 3 ? 20 : 16, fontWeight: 700, color: "#fff" }}>{cPhone}</span><span style={{ color: "#ffffff44", margin: "0 14px", fontSize: s.pageCount === 3 ? 20 : 16 }}>|</span><span style={{ fontSize: s.pageCount === 3 ? 20 : 16, fontWeight: 700, color: "#fff", textDecoration: "underline" }}>{cWeb}</span></div>
+      <div style={{ padding: s.pageCount === 3 ? "28px 48px 12px" : "16px 48px 8px", textAlign: "center" }}>
+        <div style={{ fontSize: s.pageCount === 3 ? 17 : 14, fontWeight: 800, color: C.dark, marginBottom: s.pageCount === 3 ? 22 : 14 }}>{eSpan(brokerHeading, v => setBrokerHeading(v))}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: s.pageCount === 3 ? 36 : 24 }}>
+          {brokers.map((b, i) => (<div key={i} style={{ textAlign: "center", minWidth: s.pageCount === 3 ? 170 : 140 }}><div style={{ fontSize: s.pageCount === 3 ? 15 : 13, fontWeight: 800, color: C.dark }}>{b.name}</div><div style={{ fontSize: s.pageCount === 3 ? 12 : 11, color: C.gray, marginTop: 2 }}>{b.title}</div><div style={{ fontSize: s.pageCount === 3 ? 13 : 11, fontWeight: 700, color: C.dark, marginTop: 2, textDecoration: "underline" }}>{b.email}</div></div>))}
+        </div>
+      </div>
+      <Ed id="allLnk" selected={sel} onSelect={setSel} editing={editing}
+        toolbar={<TB pos="above"><Tl>URL</Tl><input value={allListingsUrl} onChange={e => setAllListingsUrl(e.target.value)} placeholder="https://..." style={{ background: "rgba(255,255,255,0.12)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 4, padding: "2px 8px", fontSize: 10, width: 220, outline: "none" }} onClick={e => e.stopPropagation()} /></TB>}>
+        <div style={{ margin: `${s.pageCount === 3 ? 24 : 12}px 48px 0`, background: C.navy, padding: s.pageCount === 3 ? "14px" : "10px", textAlign: "center" }}>
+          {allListingsUrl && !editing ? <a href={allListingsUrl} target="_blank" rel="noreferrer" style={{ fontSize: s.pageCount === 3 ? 22 : 16, fontWeight: 800, color: "#fff", fontStyle: "italic", textDecoration: "underline" }}>VIEW ALL LISTINGS</a>
+            : <div style={{ fontSize: s.pageCount === 3 ? 22 : 16, fontWeight: 800, color: "#fff", fontStyle: "italic", textDecoration: "underline" }}>VIEW ALL LISTINGS</div>}
+        </div>
+      </Ed>
+      <div style={{ padding: s.pageCount === 3 ? "20px 48px 14px" : "12px 48px 8px" }}><p style={{ fontSize: s.pageCount === 3 ? 9.5 : 8, color: "#666", lineHeight: 1.6, textAlign: "justify", margin: 0 }}>This information contained herein has been obtained from sources believed reliable. However, we have not verified it and make no guarantee, warranty or representation about it. It is submitted subject to the possibility of errors, omissions, change of price, rental and other conditions, prior sale, lease or financing, or withdrawal without notice. It is your responsibility to independently confirm its accuracy and completeness. Any projections, opinions, assumptions, or estimates used are for example only and they may not represent the current or future suitability, availability or performance of the property. You and your tax and legal advisors should conduct your own investigation of any property and transaction. We may or may not have an exclusive or nonexclusive contractual relationship with a tenant or the owner/landlord of a particular property; and if we do, such relationship shall be fully disclosed to you on a timely basis. Third-party trademarks, service marks, graphics, and logos belong to third parties. You are not granted any right or license with respect to Schuckman Realty Inc.'s trademarks service marks, graphics, and logos or the trademarks service marks, graphics, and logos of any third party. Kenneth Schuckman is Broker of record of Schuckman Realty Inc.</p></div>
+    </>);
+
+    return (
+      <div style={{ minHeight: "100vh", background: "#c9cdd3", fontFamily: bf }} onClick={() => setSel(null)}>
+        <style>{`@media print{.np{display:none!important}body{margin:0;padding:0;background:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.pg{box-shadow:none!important;margin:0!important}}@page{margin:0;size:letter}`}</style>
+
+        <div className="np" style={{ background: C.navy, padding: "10px 28px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 200 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {logoB64 ? <img src={logoB64} alt="" style={{ height: 22 }} /> : <span style={{ color: C.red, fontWeight: 800, fontSize: 13 }}>SCHUCKMAN</span>}
+            {editing && <span style={{ color: "#ffffff44", fontSize: 10 }}>Click to adjust • Click text to edit • Drag images</span>}
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button onClick={() => setStep("editing")} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "transparent", color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>← Edit</button>
+            <button onClick={() => us("pageCount", s.pageCount === 3 ? 2 : 3)} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${s.pageCount === 2 ? C.red : "rgba(255,255,255,0.2)"}`, background: s.pageCount === 2 ? "rgba(204,34,41,0.2)" : "transparent", color: s.pageCount === 2 ? C.red : "#fff", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>{s.pageCount === 3 ? "2 Pages" : "3 Pages"}</button>
+            <label style={{ display: "flex", alignItems: "center", gap: 5, color: "#fff", fontSize: 11, cursor: "pointer", padding: "6px 10px", borderRadius: 6, background: editing ? "rgba(204,34,41,0.3)" : "rgba(255,255,255,0.1)" }}>
+              <input type="checkbox" checked={editing} onChange={e => { setEditing(e.target.checked); setSel(null); }} style={{ accentColor: C.red }} /> Edit
+            </label>
+            <button onClick={() => { setEditing(false); setSel(null); setTimeout(() => window.print(), 300); }}
+              style={{ padding: "6px 18px", borderRadius: 6, border: "none", background: C.red, color: "#fff", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🖨 Print / PDF</button>
+          </div>
+        </div>
+
+        <div ref={flyerRef}>
+          {/* PAGE 1 */}
+          <div className="pg" style={{ width: 816, minHeight: 1056, margin: "20px auto", background: "#fff", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column", pageBreakAfter: "always" }}>
+            <Ed id="logo" selected={sel} onSelect={setSel} editing={editing}
+              toolbar={<TB pos="below"><Tl>HEIGHT</Tl><Tb onClick={() => us("logoH", Math.max(40, s.logoH - 5))}>−</Tb><Tv>{s.logoH}</Tv><Tb onClick={() => us("logoH", Math.min(140, s.logoH + 5))}>+</Tb><input type="range" min={40} max={140} step={5} value={s.logoH} onChange={e => us("logoH", +e.target.value)} style={{ width: 70, accentColor: C.red }} /></TB>}>
+              <div style={{ display: "flex", justifyContent: "center", padding: "20px 20px 10px" }}>
+                {logoB64 ? <img src={logoB64} alt="" style={{ height: s.logoH, objectFit: "contain" }} />
+                  : <div style={{ textAlign: "center" }}><div style={{ fontSize: 42, fontWeight: 900, color: C.red, letterSpacing: 4 }}>SCHUCKMAN</div><div style={{ fontSize: 13, letterSpacing: 8, color: C.dark, fontWeight: 500 }}>R E A L T Y &nbsp; I N C .</div></div>}
+              </div>
+            </Ed>
+
+            <Ed id="title" selected={sel} onSelect={setSel} editing={editing}
+              toolbar={<TB pos="below"><Tl>SIZE</Tl><Tb onClick={() => us("titleSize", Math.max(18, s.titleSize - 1))}>−</Tb><Tv>{s.titleSize}</Tv><Tb onClick={() => us("titleSize", Math.min(44, s.titleSize + 1))}>+</Tb><Ts /><Tf value={s.titleFont} onChange={v => us("titleFont", v)} /></TB>}>
+              <div style={{ background: C.navy, padding: "18px 48px", textAlign: "center" }}>
+                {eSpan(d.propertyName || "PROPERTY NAME", v => updateField("propertyName", v), { fontSize: s.titleSize, fontWeight: 800, color: "#fff", letterSpacing: 3, textTransform: "uppercase", lineHeight: 1.2, fontFamily: FONTS[s.titleFont]?.value, display: "block" })}
+              </div>
+            </Ed>
+
+            <Ed id="addr" selected={sel} onSelect={setSel} editing={editing} toolbar={<TB pos="below"><Tl>CLICK TEXT TO EDIT</Tl></TB>}>
+              <div style={{ textAlign: "center", padding: "12px 48px 8px" }}>
+                {eSpan(fullAddr, v => updateField("address", v.split("|")[0]?.trim() || v), { fontSize: 16, fontWeight: 700, color: C.dark, display: "block" })}
+              </div>
+            </Ed>
+
+            {heroImg ? <div style={{ padding: "4px 0 0" }}><CropImage src={heroImg} height={s.heroH} zoom={s.heroZoom} panX={s.heroPX} panY={s.heroPY} fit={s.heroFit} onZoom={v => us("heroZoom", v)} onPan={(x, y) => { us("heroPX", x); us("heroPY", y) }} onHeight={v => us("heroH", v)} onFit={v => us("heroFit", v)} selected={sel === "hero"} onSelect={() => setSel("hero")} editing={editing} /></div>
+              : editing && <div className="np" style={{ margin: "8px 48px", border: `2px dashed ${C.border}`, borderRadius: 8, padding: 24, textAlign: "center", cursor: "pointer" }} onClick={() => heroRef.current?.click()}><div style={{ fontSize: 20 }}>📸</div><div style={{ fontSize: 12, color: C.gray, fontWeight: 600 }}>Add hero image</div><input ref={heroRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && readFile(e.target.files[0]).then(setHeroImg)} /></div>}
+
+            {s.showListing && <Ed id="lnk" selected={sel} onSelect={setSel} editing={editing}
+              toolbar={<TB pos="below"><Tl>URL</Tl><input value={listingUrl} onChange={e => setListingUrl(e.target.value)} placeholder="https://..." style={{ background: "rgba(255,255,255,0.12)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 4, padding: "2px 8px", fontSize: 10, width: 200, outline: "none" }} onClick={e => e.stopPropagation()} /><Ts /><Th onClick={() => us("showListing", false)} /></TB>}>
+              <div style={{ textAlign: "center", padding: "14px 48px 2px" }}>
+                {listingUrl && !editing ? <a href={listingUrl} target="_blank" rel="noreferrer" style={{ fontSize: 20, fontWeight: 800, color: C.navy, textDecoration: "underline", fontStyle: "italic" }}>CLICK TO VIEW LISTING</a>
+                  : <div style={{ fontSize: 20, fontWeight: 800, color: C.navy, textDecoration: "underline", fontStyle: "italic" }}>CLICK TO VIEW LISTING</div>}
+              </div>
+            </Ed>}
+            {!s.showListing && editing && <div className="np" style={{ padding: "4px 48px" }}><button onClick={() => us("showListing", true)} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>+ Show Listing Link</button></div>}
+
+            <Ed id="pi" selected={sel} onSelect={setSel} editing={editing}
+              toolbar={<TB pos="above"><Tl>SIZE</Tl><Tb onClick={() => us("bodySize", Math.max(10, s.bodySize - 1))}>−</Tb><Tv>{s.bodySize}</Tv><Tb onClick={() => us("bodySize", Math.min(20, s.bodySize + 1))}>+</Tb><Ts /><Tf value={s.bodyFont} onChange={v => us("bodyFont", v)} /></TB>}>
+              <div style={{ textAlign: "center", padding: "12px 48px 4px" }}><div style={{ fontSize: 20, fontWeight: 800, color: C.dark }}>PROPERTY INFORMATION</div></div>
+              <div style={{ padding: "0 48px 20px" }}>
+                {propRows.map(([lbl, val], i) => {
+                  const field = lbl.includes("SITE") ? "address" : lbl.includes("SIZE") ? "sizeAvailable" : lbl.includes("FRONT") ? "frontage" : lbl.includes("PARK") ? "parking" : "totalGLA";
+                  return <div key={i} style={{ fontSize: s.bodySize, marginBottom: 4, lineHeight: 1.5, fontFamily: FONTS[s.bodyFont]?.value }}><span style={{ fontWeight: 800, color: C.red }}>{lbl}</span>{" "}{eSpan(val, v => updateField(field, v), { color: C.dark })}</div>;
+                })}
+              </div>
+            </Ed>
+
+            {s.showTable && d.availableSpaces?.length > 0 && (
+              <Ed id="table" selected={sel} onSelect={setSel} editing={editing}
+                toolbar={<TB pos="above"><Tl>SIZE</Tl><Tb onClick={() => us("tableSize", Math.max(10, s.tableSize - 1))}>−</Tb><Tv>{s.tableSize}</Tv><Tb onClick={() => us("tableSize", Math.min(20, s.tableSize + 1))}>+</Tb><Ts /><Tf value={s.tableFont} onChange={v => us("tableFont", v)} /><Ts /><Th onClick={() => us("showTable", false)} /></TB>}>
+                <div style={{ padding: "0 48px 20px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: FONTS[s.tableFont]?.value }}>
+                    <thead><tr style={{ background: C.navy }}>
+                      <th style={{ padding: "12px 14px", textAlign: "left", color: "#fff", fontWeight: 800, fontSize: 13, letterSpacing: 1.5, width: "12%" }}>SUITE</th>
+                      <th style={{ padding: "12px 14px", textAlign: "left", color: "#fff", fontWeight: 800, fontSize: 13, letterSpacing: 1.5, width: "15%" }}>SIZE</th>
+                      <th style={{ padding: "12px 14px", textAlign: "left", color: "#fff", fontWeight: 800, fontSize: 13, letterSpacing: 1.5, width: "15%" }}>PRICE/SF</th>
+                      <th style={{ padding: "12px 14px", textAlign: "left", color: "#fff", fontWeight: 800, fontSize: 13, letterSpacing: 1.5 }}>NOTES</th>
+                    </tr></thead>
+                    <tbody>{d.availableSpaces.map((sp, i) => (
+                      <tr key={i} style={{ borderBottom: `2px solid ${C.border}`, background: i % 2 ? C.light : "#fff" }}>
+                        <td style={{ padding: "14px 14px", fontWeight: 700, fontSize: s.tableSize, color: C.navy, whiteSpace: "nowrap" }}>{eSpan(sp.suite || "—", v => updateField(`availableSpaces.${i}.suite`, v))}</td>
+                        <td style={{ padding: "14px 14px", fontSize: s.tableSize, fontWeight: 600, whiteSpace: "nowrap" }}>{eSpan(sp.size || "—", v => updateField(`availableSpaces.${i}.size`, v))}</td>
+                        <td style={{ padding: "14px 14px", fontWeight: 800, color: C.red, fontSize: s.tableSize, whiteSpace: "nowrap" }}>{eSpan(sp.pricePerSF || "—", v => updateField(`availableSpaces.${i}.pricePerSF`, v))}</td>
+                        <td style={{ padding: "14px 14px", color: C.dark, fontSize: s.tableSize, lineHeight: 1.5 }}>{eSpan(sp.notes || "—", v => updateField(`availableSpaces.${i}.notes`, v))}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </Ed>
+            )}
+            {!s.showTable && <SB sk="showTable" label="Table" />}
+            <div style={{ flex: 1 }} />
+            {pageFooter}
+          </div>
+
+          {/* PAGE 2 */}
+          {hasP2 && <div className="pg" style={{ width: 816, minHeight: 1056, margin: "20px auto", background: "#fff", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column", pageBreakAfter: "always" }}>
+            {s.showSite && siteImg ? <>
+              <div style={{ padding: "12px 0 0" }}><CropImage src={siteImg} height={s.siteH} zoom={s.siteZoom} panX={s.sitePX} panY={s.sitePY} fit={s.siteFit} onZoom={v => us("siteZoom", v)} onPan={(x, y) => { us("sitePX", x); us("sitePY", y) }} onHeight={v => us("siteH", v)} onFit={v => us("siteFit", v)} selected={sel === "site"} onSelect={() => setSel("site")} editing={editing} /></div>
+              {editing && <div className="np" style={{ textAlign: "right", padding: "4px 48px 0" }}><button onClick={() => us("showSite", false)} style={{ padding: "4px 12px", fontSize: 11, borderRadius: 4, border: "none", cursor: "pointer", fontWeight: 700, background: "rgba(204,34,41,0.1)", color: C.red }}>Hide Site Plan</button></div>}
+            </>
+              : s.showSite && editing ? <div className="np" style={{ margin: "20px 48px", border: `2px dashed ${C.border}`, borderRadius: 8, padding: 24, textAlign: "center" }}><div style={{ cursor: "pointer" }} onClick={() => siteRef.current?.click()}><div style={{ fontSize: 20 }}>📐</div><div style={{ fontSize: 12, color: C.gray, fontWeight: 600 }}>Add site plan</div><input ref={siteRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && readFile(e.target.files[0]).then(setSiteImg)} /></div><div style={{ marginTop: 8 }}><button onClick={() => us("showSite", false)} style={{ padding: "4px 12px", fontSize: 11, borderRadius: 4, border: "none", cursor: "pointer", fontWeight: 700, background: "rgba(204,34,41,0.1)", color: C.red }}>Hide Site Plan Section</button></div></div>
+              : null}
+            {!s.showSite && editing && <div className="np" style={{ padding: "4px 48px" }}><button onClick={() => us("showSite", true)} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>+ Show Site Plan</button></div>}
+
+            {s.showHL && hl.length > 0 && (
+              <Ed id="hl" selected={sel} onSelect={setSel} editing={editing}
+                toolbar={<TB pos="above"><Tl>SIZE</Tl><Tb onClick={() => us("hlSize", Math.max(10, s.hlSize - 1))}>−</Tb><Tv>{s.hlSize}</Tv><Tb onClick={() => us("hlSize", Math.min(22, s.hlSize + 1))}>+</Tb><Ts /><Tf value={s.hlFont} onChange={v => us("hlFont", v)} /><Ts /><Tl>COL</Tl>{[1, 2].map(n => <Tb key={n} onClick={() => us("hlCols", n)}><span style={{ color: s.hlCols === n ? C.red : "#fff" }}>{n}</span></Tb>)}<Ts /><Th onClick={() => us("showHL", false)} /></TB>}>
+                <div style={{ padding: "28px 48px 16px" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: C.dark, textAlign: "center", marginBottom: 18 }}>PROPERTY HIGHLIGHTS</div>
+                  {s.hlCols === 2 ? (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 32px" }}>
+                      {[hl.slice(0, hlMid), hl.slice(hlMid)].map((col, ci) => (
+                        <div key={ci}>{col.map((h, ri) => { const idx = ci === 0 ? ri : ri + hlMid; return (
+                          <div key={idx} style={{ fontSize: s.hlSize, color: C.dark, marginBottom: 9, lineHeight: 1.6, display: "flex", gap: 8, alignItems: "baseline", fontFamily: FONTS[s.hlFont]?.value }}>
+                            <span style={{ color: C.red, fontWeight: 900, fontSize: s.hlSize + 4, flexShrink: 0 }}>•</span>
+                            {eSpan(h, v => updateField(`highlights.${idx}`, v), { fontWeight: 500, flex: 1 })}
+                          </div>); })}</div>
+                      ))}
+                    </div>
+                  ) : hl.map((h, i) => (
+                    <div key={i} style={{ fontSize: s.hlSize, color: C.dark, marginBottom: 9, lineHeight: 1.6, display: "flex", gap: 8, alignItems: "baseline", fontFamily: FONTS[s.hlFont]?.value }}>
+                      <span style={{ color: C.red, fontWeight: 900, fontSize: s.hlSize + 4, flexShrink: 0 }}>•</span>
+                      {eSpan(h, v => updateField(`highlights.${i}`, v), { fontWeight: 500, flex: 1 })}
+                    </div>
+                  ))}
+                </div>
+              </Ed>
+            )}
+            {!s.showHL && <SB sk="showHL" label="Highlights" />}
+
+            {s.showDemo && (dm.population1mi || dm.trafficCount) && (
+              <Ed id="demo" selected={sel} onSelect={setSel} editing={editing}
+                toolbar={<TB pos="above"><Tl>CLICK VALUES TO EDIT</Tl><Ts /><Th onClick={() => us("showDemo", false)} /></TB>}>
+                <div style={{ padding: "12px 48px 16px" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: C.dark, textAlign: "center", marginBottom: 14 }}>DEMOGRAPHICS</div>
+                  <div style={{ display: "flex", justifyContent: "center", gap: 14, flexWrap: "wrap" }}>
+                    {dm.trafficCount && <div style={{ textAlign: "center", padding: "12px 22px", background: C.light, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: C.gray, textTransform: "uppercase", letterSpacing: 1 }}>Traffic Count</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: C.red, marginTop: 4 }}>{eSpan(dm.trafficCount, v => updateField("demographics.trafficCount", v))}</div>
+                    </div>}
+                    {[["1mi", "1 Mile"], ["3mi", "3 Mile"], ["5mi", "5 Mile"]].map(([k, l]) => dm[`population${k}`] && (
+                      <div key={k} style={{ textAlign: "center", padding: "12px 22px", background: C.light, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: C.gray, textTransform: "uppercase", letterSpacing: 1 }}>{l} Pop.</div>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: C.navy, marginTop: 4 }}>{eSpan(dm[`population${k}`], v => updateField(`demographics.population${k}`, v))}</div>
+                        {dm[`avgHHI${k}`] && <div style={{ fontSize: 12, color: C.gray, marginTop: 2 }}>HHI: {eSpan(dm[`avgHHI${k}`], v => updateField(`demographics.avgHHI${k}`, v))}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Ed>
+            )}
+            {!s.showDemo && <SB sk="showDemo" label="Demographics" />}
+
+            {s.showTenants && d.coTenants?.length > 0 && (
+              <Ed id="ten" selected={sel} onSelect={setSel} editing={editing}
+                toolbar={<TB pos="above"><Tl>TEXT</Tl><Tb onClick={() => us("tenantSize", Math.max(10, s.tenantSize - 1))}>−</Tb><Tv>{s.tenantSize}</Tv><Tb onClick={() => us("tenantSize", Math.min(22, s.tenantSize + 1))}>+</Tb><Ts /><Tf value={s.tenantFont} onChange={v => us("tenantFont", v)} /><Ts /><Tl>LOGO H</Tl><Tb onClick={() => us("tenantLogoH", Math.max(16, s.tenantLogoH - 4))}>−</Tb><Tv>{s.tenantLogoH}</Tv><Tb onClick={() => us("tenantLogoH", Math.min(80, s.tenantLogoH + 4))}>+</Tb><Ts /><Th onClick={() => us("showTenants", false)} /></TB>}>
+                <div style={{ padding: "16px 48px 28px" }}>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: C.dark, textAlign: "center", marginBottom: 18 }}>TENANTS INCLUDE</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 10 }}>
+                    {d.coTenants.map((t, i) => (
+                      tenantLogos[i]?.url ? (
+                        <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                          <div style={{ background: tenantLogos[i].bg || C.light, borderRadius: 8, border: `1.5px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", ...(( tenantLogos[i].fit || "contain") === "cover" ? { width: 120, height: s.tenantLogoH + 16, padding: 0 } : { padding: "8px 16px", minHeight: s.tenantLogoH + 16 }) }}>
+                            <img src={tenantLogos[i].url} alt={t} title={t} style={{ objectFit: tenantLogos[i].fit || "contain", transform: `scale(${tenantLogos[i].zoom || 1})`, ...((tenantLogos[i].fit || "contain") === "cover" ? { width: "100%", height: "100%" } : { maxHeight: s.tenantLogoH, maxWidth: 120 }) }} />
+                          </div>
+                          {editing && (
+                            <div className="np" onClick={e => e.stopPropagation()} style={{ display: "flex", gap: 3, alignItems: "center", background: "rgba(0,0,0,0.7)", borderRadius: 6, padding: "3px 5px", flexWrap: "wrap", justifyContent: "center", maxWidth: 140 }}>
+                              <button onClick={() => setTenantFit(i, (tenantLogos[i].fit || "contain") === "contain" ? "cover" : "contain")} style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", borderRadius: 3, padding: "1px 5px", cursor: "pointer", fontSize: 8, fontWeight: 600 }}>{(tenantLogos[i].fit || "contain") === "contain" ? "Fill" : "Fit"}</button>
+                              <input type="range" min={0.5} max={3} step={0.1} value={tenantLogos[i].zoom || 1} onChange={e => setTenantZoom(i, +e.target.value)} style={{ width: 40, accentColor: C.red }} title="Zoom" />
+                              <span style={{ color: "#fff", fontSize: 8, fontWeight: 700 }}>{Math.round((tenantLogos[i].zoom || 1) * 100)}%</span>
+                              {["#ffffff", "#f0f2f5", "#000000", "#1B2A4A"].map(c => (
+                                <div key={c} onClick={() => setTenantBg(i, c)} style={{ width: 12, height: 12, borderRadius: 2, background: c, border: (tenantLogos[i].bg || "#f0f2f5") === c ? "2px solid #ffcc00" : "1px solid rgba(255,255,255,0.4)", cursor: "pointer" }} />
+                              ))}
+                              <label style={{ position: "relative", width: 12, height: 12, borderRadius: 2, overflow: "hidden", cursor: "pointer", background: `conic-gradient(red,yellow,lime,cyan,blue,magenta,red)`, border: "1px solid rgba(255,255,255,0.4)" }}>
+                                <input type="color" value={tenantLogos[i].bg || "#f0f2f5"} onChange={e => setTenantBg(i, e.target.value)} style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer" }} />
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div key={i} style={{ padding: "10px 24px", background: C.light, borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: s.tenantSize, fontWeight: 700, color: C.navy, boxShadow: "0 1px 4px rgba(0,0,0,0.06)", fontFamily: FONTS[s.tenantFont]?.value }}>
+                          {eSpan(t, v => updateField(`coTenants.${i}`, v))}
+                        </div>
+                      )
+                    ))}
+                  </div>
+                </div>
+              </Ed>
+            )}
+            {!s.showTenants && <SB sk="showTenants" label="Tenants" />}
+            {s.pageCount === 2 && <>{contactBlock}</>}
+            <div style={{ flex: 1 }} />{pageFooter}
+          </div>}
+
+          {/* PAGE 3 (only if 3-page mode) */}
+          {s.pageCount === 3 && <div className="pg" style={{ width: 816, minHeight: 1056, margin: "20px auto", background: "#fff", boxShadow: "0 4px 20px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column", pageBreakAfter: "auto" }}>
+            {contactBlock}
+            <div style={{ flex: 1 }} />
+            {pageFooter}
+          </div>}
+        </div>
+        <div className="np" style={{ height: 40 }} />
+      </div>
+    );
+  }
+  return null;
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
